@@ -6,6 +6,3 @@ build/
 dist/
 *.spec
 *.egg-info/
-Library/library.sqlite3
-Library/Overrides/
-Library/Compiled/
