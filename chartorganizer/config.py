@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 
 
 DEFAULT_SOURCE = Path(
@@ -39,5 +40,14 @@ class AppPaths:
 
 
 def project_paths(root: Path | None = None, source: Path | None = None) -> AppPaths:
-    base = (root or Path(__file__).resolve().parent.parent).resolve()
+    if root is not None:
+        base = root
+    elif getattr(sys, "frozen", False):
+        # PyInstaller puts the executable at <project>/dist/ChartOrganizer.
+        # Keep mutable library data outside dist, which the rebuild replaces.
+        executable_dir = Path(sys.executable).resolve().parent
+        base = executable_dir.parent.parent if executable_dir.parent.name.casefold() == "dist" else executable_dir
+    else:
+        base = Path(__file__).resolve().parent.parent
+    base = base.resolve()
     return AppPaths(base, source or DEFAULT_SOURCE)

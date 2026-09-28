@@ -267,10 +267,14 @@ class ChartOrganizerApp:
                 OverrideService(self.repository, self.paths.overrides).import_pdf(old, Path(path))
                 messagebox.showinfo("Override", "Override imported", parent=dialog)
         def import_song_instrument_override():
-            path = filedialog.askopenfilename(parent=dialog, filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
-            if path:
-                OverrideService(self.repository, self.paths.overrides).import_song_instrument_pdf(song.id, instrument.id, Path(path))
-                messagebox.showinfo("Override", "Song/instrument override imported", parent=dialog)
+            paths = filedialog.askopenfilenames(parent=dialog, filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
+            if paths:
+                try:
+                    OverrideService(self.repository, self.paths.overrides).import_song_instrument_pdfs(song.id, instrument.id, [Path(path) for path in paths])
+                except Exception as exc:
+                    messagebox.showerror("Override", f"Could not import song/instrument override: {exc}", parent=dialog)
+                    return
+                messagebox.showinfo("Override", f"Song/instrument override imported ({len(paths)} PDFs combined)", parent=dialog)
         ttk.Button(button_frame, text="Import song/instrument override…", command=import_song_instrument_override).pack(side="left")
         ttk.Button(button_frame, text="Import selected part override…", command=import_override).pack(side="left", padx=(6, 0))
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=4)

@@ -1,6 +1,6 @@
 # ChartOrganizer
 
-ChartOrganizer is a Windows desktop app for building a single ordered PDF from sheet-music parts in the shared `Active Repertoire` folder. The Drive folder is read-only. Local settings and outputs are under `Library/`.
+ChartOrganizer is a Windows desktop app for building a single ordered PDF from sheet-music parts in the shared `Active Repertoire` folder. The Drive folder is read-only. Local settings and outputs are under the project-root `Library/` folder (for this checkout: `C:\Users\Joe\Projects\ChartOrganizer\Library`). The packaged app keeps this folder outside `dist`, so rebuilding the app preserves playlists and other library data.
 
 ## Run from source
 
