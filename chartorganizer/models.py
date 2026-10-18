@@ -14,6 +14,7 @@ class Song:
     relative_folder: str = ""
     pdf_count: int = 0
     needs_review: bool = False
+    source_root: str = ""
 
 
 @dataclass
@@ -46,9 +47,21 @@ class PartSelection:
 
 
 @dataclass
+class OverridePart:
+    override_path: str
+    label: str
+    kind: str = "part"
+
+    @property
+    def selection_path(self) -> str:
+        return f"Overrides/{self.override_path}"
+
+
+@dataclass
 class PlaylistEntry:
     song_id: int
     position: int = 0
+    optimize_for_kindle: bool = True
 
 
 @dataclass
