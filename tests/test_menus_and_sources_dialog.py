@@ -7,7 +7,7 @@ import pytest
 
 from chartorganizer.app import ChartOrganizerApp
 from chartorganizer.config import project_paths
-from chartorganizer.models import Song
+from chartorganizer.models import Playlist, PlaylistEntry, Song
 
 
 def widgets(parent):
@@ -34,8 +34,13 @@ def app(tmp_path, monkeypatch):
     source = tmp_path / "one" / "Repertoire"
     (source / "Same Song").mkdir(parents=True)
     paths = project_paths(tmp_path, source)
+    settings = tmp_path / "settings.json"
+    settings.touch()
     monkeypatch.setattr("chartorganizer.app.project_paths", lambda _root: paths)
+    monkeypatch.setattr("chartorganizer.app.user_settings_path", lambda: settings)
+    monkeypatch.setattr("chartorganizer.app.save_user_settings", lambda _paths: None)
     instance = ChartOrganizerApp(root, tmp_path)
+    instance.first_run = False
     try:
         yield instance
     finally:
@@ -61,6 +66,37 @@ def test_source_menu_opens_populated_dialog_with_visible_controls(app, monkeypat
         assert button(dialog, label).winfo_ismapped()
     assert dialog.winfo_width() >= 440
     button(dialog, "Cancel").invoke()
+
+
+def test_setup_saves_browsed_paths_and_migrates_playlist_data(app, tmp_path, monkeypatch):
+    source_song = app.repository.upsert_song(Song(None, "Song", "Song", [], "Song", source_root=str(app.paths.source)))
+    instrument = app.repository.instrument("Trombone")
+    app.repository.save_playlist(Playlist(None, "Set", instrument.id, [PlaylistEntry(source_song.id)]))
+    saved_settings = []
+    monkeypatch.setattr("chartorganizer.app.save_user_settings", lambda paths: saved_settings.append(paths))
+    monkeypatch.setattr(app, "refresh", lambda: None)
+    app.setup_paths()
+    dialog = dialog_for(app)
+    entries = [w for w in widgets(dialog) if w.winfo_class() == "TEntry"]
+    assert len(entries) == 3
+    chosen_source = tmp_path / "music-two"
+    chosen_source.mkdir()
+    chosen_library = tmp_path / "library-two"
+    chosen_output = tmp_path / "pdf-output"
+    entries[0].delete(0, tk.END)
+    entries[0].insert(0, f"{app.paths.source}; {chosen_source}")
+    entries[1].delete(0, tk.END)
+    entries[1].insert(0, str(chosen_library))
+    entries[2].delete(0, tk.END)
+    entries[2].insert(0, str(chosen_output))
+
+    button(dialog, "Save").invoke()
+
+    assert app.paths.sources == (app.paths.source, chosen_source)
+    assert app.paths.library == chosen_library
+    assert app.paths.compiled == chosen_output
+    assert app.repository.load_playlist("Set").entries[0].song_id == source_song.id
+    assert saved_settings and saved_settings[0] == app.paths
 
 
 def test_same_named_nested_songs_show_distinct_relative_paths(app):
@@ -140,17 +176,14 @@ def test_menus_dispatch_and_shortcuts_stay_in_main_window(app, monkeypatch):
 
 def test_ctrl_enter_in_song_entry_only_compiles(app, monkeypatch):
     calls = []
+    bindings = {}
     monkeypatch.setattr(app, "add_text", lambda: calls.append("add"))
     monkeypatch.setattr(app, "compile", lambda: calls.append("compile"))
+    monkeypatch.setattr(app.root, "bind", lambda sequence, callback: bindings.setdefault(sequence, callback))
     app._build_menus()
-    app.root.deiconify()
-    app.root.update()
     entry = next(w for w in widgets(app.root) if w.winfo_class() == "TEntry"
                  and str(w.cget("textvariable")) == str(app.input_var))
-    entry.focus_force()
-    app.root.update()
-    entry.event_generate("<Control-Return>")
-    app.root.update()
+    assert bindings["<Control-Return>"](SimpleNamespace(widget=entry)) == "break"
     assert calls == ["compile"]
 
 

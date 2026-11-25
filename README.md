@@ -1,6 +1,15 @@
 # ChartOrganizer
 
-ChartOrganizer is a Windows desktop app for building a single ordered PDF from sheet-music parts in one or more repertoire folders. Source folders are read-only. Local settings and outputs are under the project-root `Library/` folder (for this checkout: `C:\Users\Joe\Projects\ChartOrganizer\Library`). The packaged app keeps this folder outside `dist`, so rebuilding the app preserves playlists and other library data.
+ChartOrganizer is a Windows desktop app for building an ordered PDF from sheet-music parts in one or more repertoire folders. Source folders are read-only. On first launch, use **Library → Setup…** to choose music source folders, the library folder, and the compiled PDF folder. The library folder contains the database and imported parts; keep it together when backing up or moving the app to another computer. Settings are stored in the current Windows user profile.
+
+## Install the ready-to-run Windows release
+
+1. Download and extract `ChartOrganizer-<version>-windows-x64.zip` to a folder you can write to.
+2. Launch `ChartOrganizer.exe` from the extracted folder.
+3. On first launch, choose your sheet-music folders, library location, and compiled PDF destination in Setup. You can reopen Setup later from the Library menu.
+4. Create a playlist, add songs, choose an instrument, set its parts, and save. The playlist keeps one song order; each playlist and instrument pair keeps its own part selections and Kindle layout choices. Choose another instrument to set up and compile its PDF from the same playlist.
+
+Keep the library folder when upgrading. Extract a newer release to its own folder, then open it and select the existing library folder in Setup. The app copies the library before switching to it and retains the original as a recovery copy.
 
 ## Run from source
 
@@ -9,7 +18,7 @@ python -m pip install -r requirements.txt
 python -m chartorganizer.app
 ```
 
-The app scans configured source folders on launch, initially using the shared `Active Repertoire` folder. Use **Library → Source Folders…** to add or remove folders, then Save. Sources can contain song folders, nested collections (such as holiday categories), and standalone PDFs. Collections are expanded into individual songs; instrument parts, PDF/audio subfolders, and song versions stay grouped with their song. Existing song groups keep their identities and saved selections. Same-name songs stay separate and display their source or relative path beside the name. A typed name matching several songs is ambiguous; select the intended song from Available songs instead.
+The app scans configured source folders on launch. Use **Library → Setup…** to change source, library, or output folders, or **Library → Source Folders…** to edit source folders. Sources can contain song folders, nested collections (such as holiday categories), and standalone PDFs. Collections are expanded into individual songs; instrument parts, PDF/audio subfolders, and song versions stay grouped with their song. Existing song groups keep their identities and saved selections. Same-name songs stay separate and display their source or relative path beside the name. A typed name matching several songs is ambiguous; select the intended song from Available songs instead.
 
 Use **File** for New Playlist, Open Playlist, Save, Save As, Compile PDF, Open Output Folder, and Exit. Choose an instrument and add songs with the searchable list or a comma-separated list. **Playlist** contains song selection, removal, ordering, and Parts commands; the list buttons remain available. **Library** contains source folders, aliases/instrument filters, and Refresh.
 

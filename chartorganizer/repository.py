@@ -45,6 +45,18 @@ CREATE TABLE IF NOT EXISTS playlist_entries (playlist_id INTEGER NOT NULL REFERE
  song_id INTEGER NOT NULL REFERENCES songs(id), position INTEGER NOT NULL,
  optimize_for_kindle INTEGER NOT NULL DEFAULT 1,
  PRIMARY KEY(playlist_id, position));
+CREATE TABLE IF NOT EXISTS playlist_part_selections (
+ playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+ song_id INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+ instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+ source_relative_path TEXT NOT NULL, order_index INTEGER NOT NULL, page_ranges TEXT,
+ override_path TEXT, override_enabled INTEGER NOT NULL DEFAULT 1,
+ PRIMARY KEY(playlist_id,song_id,instrument_id,source_relative_path));
+CREATE TABLE IF NOT EXISTS playlist_entry_instrument_settings (
+ playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+ position INTEGER NOT NULL, instrument_id INTEGER NOT NULL REFERENCES instruments(id),
+ optimize_for_kindle INTEGER NOT NULL DEFAULT 1,
+ PRIMARY KEY(playlist_id,position,instrument_id));
 """
 
 
@@ -66,6 +78,16 @@ class Repository:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlist_entries)")}
             if "optimize_for_kindle" not in columns:
                 conn.execute("ALTER TABLE playlist_entries ADD COLUMN optimize_for_kindle INTEGER NOT NULL DEFAULT 1")
+            settings_columns = {row["name"] for row in conn.execute("PRAGMA table_info(playlist_entry_instrument_settings)")}
+            if "optimize_for_kindle" not in settings_columns:
+                conn.execute("ALTER TABLE playlist_entry_instrument_settings ADD COLUMN optimize_for_kindle INTEGER NOT NULL DEFAULT 1")
+            conn.execute("INSERT OR IGNORE INTO playlist_part_selections(playlist_id,song_id,instrument_id,source_relative_path,order_index,page_ranges,override_path,override_enabled) "
+                         "SELECT p.id,s.song_id,p.instrument_id,s.source_relative_path,s.order_index,s.page_ranges,s.override_path,s.override_enabled "
+                         "FROM playlists p JOIN playlist_entries e ON e.playlist_id=p.id JOIN part_selections s "
+                         "ON s.song_id=e.song_id AND s.instrument_id=p.instrument_id")
+            conn.execute("INSERT OR IGNORE INTO playlist_entry_instrument_settings(playlist_id,position,instrument_id,optimize_for_kindle) "
+                         "SELECT e.playlist_id,e.position,p.instrument_id,e.optimize_for_kindle FROM playlist_entries e "
+                         "JOIN playlists p ON p.id=e.playlist_id")
             conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','3')")
             version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()["value"]
             if version == "1":
@@ -209,15 +231,22 @@ class Repository:
     def song(self, song_id: int) -> Song | None:
         return next((s for s in self.songs() if s.id == song_id), None)
 
-    def save_selections(self, song_id: int, instrument_id: int, selections: list[PartSelection]) -> None:
+    def save_selections(self, song_id: int, instrument_id: int, selections: list[PartSelection], playlist_id: int | None = None) -> None:
         with self.transaction() as conn:
+            if playlist_id is not None:
+                conn.execute("DELETE FROM playlist_part_selections WHERE playlist_id=? AND song_id=? AND instrument_id=?", (playlist_id, song_id, instrument_id))
+                conn.executemany("INSERT INTO playlist_part_selections(playlist_id,song_id,instrument_id,source_relative_path,order_index,page_ranges,override_path,override_enabled) VALUES(?,?,?,?,?,?,?,?)", [(playlist_id, song_id, instrument_id, s.source_relative_path, i, s.page_ranges, s.override_path, int(s.override_enabled)) for i, s in enumerate(selections)])
+                return
             conn.execute("DELETE FROM part_selections WHERE song_id=? AND instrument_id=?", (song_id, instrument_id))
             conn.executemany("INSERT INTO part_selections(song_id,instrument_id,source_relative_path,order_index,page_ranges,override_path,override_enabled) VALUES(?,?,?,?,?,?,?)", [(song_id, instrument_id, s.source_relative_path, i, s.page_ranges, s.override_path, int(s.override_enabled)) for i, s in enumerate(selections)])
 
-    def selections(self, song_id: int, instrument_id: int) -> list[PartSelection]:
+    def selections(self, song_id: int, instrument_id: int, playlist_id: int | None = None) -> list[PartSelection]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM part_selections WHERE song_id=? AND instrument_id=? ORDER BY order_index", (song_id, instrument_id)).fetchall()
-        return [PartSelection(r["id"], r["song_id"], r["instrument_id"], r["source_relative_path"], r["order_index"], r["page_ranges"], r["override_path"], bool(r["override_enabled"])) for r in rows]
+            if playlist_id is None:
+                rows = conn.execute("SELECT * FROM part_selections WHERE song_id=? AND instrument_id=? ORDER BY order_index", (song_id, instrument_id)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM playlist_part_selections WHERE playlist_id=? AND song_id=? AND instrument_id=? ORDER BY order_index", (playlist_id, song_id, instrument_id)).fetchall()
+        return [PartSelection(r["id"] if "id" in r.keys() else None, r["song_id"], r["instrument_id"], r["source_relative_path"], r["order_index"], r["page_ranges"], r["override_path"], bool(r["override_enabled"])) for r in rows]
 
     def update_selection(self, selection: PartSelection) -> None:
         with self.transaction() as conn:
@@ -275,7 +304,25 @@ class Repository:
             existing = conn.execute("SELECT id FROM playlists WHERE name=?", (playlist.name,)).fetchone()
             if existing and (not playlist.id or existing["id"] != playlist.id) and not replace:
                 raise ValueError(f"A playlist named '{playlist.name}' already exists")
+            saved_entry_settings = {}
+            setting_instruments = {playlist.instrument_id}
             if playlist.id:
+                previous_entries = conn.execute("SELECT song_id,position FROM playlist_entries WHERE playlist_id=? ORDER BY position", (playlist.id,)).fetchall()
+                previous_settings = conn.execute("SELECT position,instrument_id,optimize_for_kindle FROM playlist_entry_instrument_settings WHERE playlist_id=?", (playlist.id,)).fetchall()
+                occurrence_by_position = {}
+                occurrence_counts = {}
+                for row in previous_entries:
+                    song_id = row["song_id"]
+                    occurrence_by_position[row["position"]] = occurrence_counts.get(song_id, 0)
+                    occurrence_counts[song_id] = occurrence_counts.get(song_id, 0) + 1
+                for row in previous_settings:
+                    position = row["position"]
+                    if position < len(previous_entries):
+                        song_id = previous_entries[position]["song_id"]
+                        occurrence = occurrence_by_position[position]
+                        saved_entry_settings[(row["instrument_id"], song_id, occurrence)] = bool(row["optimize_for_kindle"])
+                        setting_instruments.add(row["instrument_id"])
+                conn.execute("DELETE FROM playlist_entry_instrument_settings WHERE playlist_id=?", (playlist.id,))
                 conn.execute("UPDATE playlists SET name=?,instrument_id=? WHERE id=?", (playlist.name, playlist.instrument_id, playlist.id))
                 ident = playlist.id
             elif existing:
@@ -285,6 +332,16 @@ class Repository:
                 ident = conn.execute("INSERT INTO playlists(name,instrument_id) VALUES(?,?)", (playlist.name, playlist.instrument_id)).lastrowid
             conn.execute("DELETE FROM playlist_entries WHERE playlist_id=?", (ident,))
             conn.executemany("INSERT INTO playlist_entries(playlist_id,song_id,position,optimize_for_kindle) VALUES(?,?,?,?)", [(ident, e.song_id, i, int(e.optimize_for_kindle)) for i, e in enumerate(playlist.entries)])
+            new_occurrences = {}
+            new_setting_rows = []
+            for position, entry in enumerate(playlist.entries):
+                occurrence = new_occurrences.get(entry.song_id, 0)
+                new_occurrences[entry.song_id] = occurrence + 1
+                for instrument_id in setting_instruments:
+                    value = saved_entry_settings.get((instrument_id, entry.song_id, occurrence),
+                                                     entry.optimize_for_kindle if instrument_id == playlist.instrument_id else True)
+                    new_setting_rows.append((ident, position, instrument_id, int(value)))
+            conn.executemany("INSERT INTO playlist_entry_instrument_settings(playlist_id,position,instrument_id,optimize_for_kindle) VALUES(?,?,?,?)", new_setting_rows)
         return Playlist(ident, playlist.name, playlist.instrument_id, [PlaylistEntry(e.song_id, i, e.optimize_for_kindle) for i, e in enumerate(playlist.entries)], False)
 
     def playlists(self) -> list[str]:
@@ -303,4 +360,28 @@ class Repository:
         source = self.load_playlist(source_name)
         if not source:
             raise KeyError(source_name)
-        return self.save_playlist(Playlist(None, target_name, source.instrument_id, [PlaylistEntry(e.song_id, e.position, e.optimize_for_kindle) for e in source.entries]))
+        duplicate = self.save_playlist(Playlist(None, target_name, source.instrument_id,
+                                                [PlaylistEntry(e.song_id, e.position, e.optimize_for_kindle) for e in source.entries]))
+        with self.transaction() as conn:
+            conn.execute("INSERT OR IGNORE INTO playlist_part_selections(playlist_id,song_id,instrument_id,source_relative_path,order_index,page_ranges,override_path,override_enabled) "
+                         "SELECT ?,song_id,instrument_id,source_relative_path,order_index,page_ranges,override_path,override_enabled "
+                         "FROM playlist_part_selections WHERE playlist_id=?", (duplicate.id, source.id))
+            conn.execute("INSERT OR IGNORE INTO playlist_entry_instrument_settings(playlist_id,position,instrument_id,optimize_for_kindle) "
+                         "SELECT ?,position,instrument_id,optimize_for_kindle FROM playlist_entry_instrument_settings WHERE playlist_id=?",
+                         (duplicate.id, source.id))
+        return duplicate
+
+    def save_entry_settings(self, playlist_id: int, instrument_id: int, entries: list[PlaylistEntry]) -> None:
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM playlist_entry_instrument_settings WHERE playlist_id=? AND instrument_id=?",
+                         (playlist_id, instrument_id))
+            conn.executemany("INSERT INTO playlist_entry_instrument_settings(playlist_id,position,instrument_id,optimize_for_kindle) VALUES(?,?,?,?)",
+                             [(playlist_id, position, instrument_id, int(entry.optimize_for_kindle))
+                              for position, entry in enumerate(entries)])
+
+    def load_entry_settings(self, playlist_id: int, instrument_id: int, entries: list[PlaylistEntry]) -> list[PlaylistEntry]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT position,optimize_for_kindle FROM playlist_entry_instrument_settings WHERE playlist_id=? AND instrument_id=?",
+                                (playlist_id, instrument_id)).fetchall()
+        settings = {row["position"]: bool(row["optimize_for_kindle"]) for row in rows}
+        return [PlaylistEntry(entry.song_id, i, settings.get(i, True)) for i, entry in enumerate(entries)]

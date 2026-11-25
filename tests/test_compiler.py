@@ -29,9 +29,9 @@ def test_compiles_one_pdf_in_playlist_and_part_order(tmp_path: Path):
     alpha = repo.upsert_song(Song(None, "Alpha", "Alpha", [], "Alpha"))
     beta = repo.upsert_song(Song(None, "Beta", "Beta", [], "Beta"))
     instrument = repo.instrument("Trombone")
-    repo.save_selections(alpha.id, instrument.id, [PartSelection(None, alpha.id, instrument.id, "Alpha/a1.pdf"), PartSelection(None, alpha.id, instrument.id, "Alpha/a2.pdf")])
-    repo.save_selections(beta.id, instrument.id, [PartSelection(None, beta.id, instrument.id, "Beta/b.pdf")])
     playlist = repo.save_playlist(Playlist(None, "Set", instrument.id, [PlaylistEntry(alpha.id), PlaylistEntry(beta.id)]))
+    repo.save_selections(alpha.id, instrument.id, [PartSelection(None, alpha.id, instrument.id, "Alpha/a1.pdf"), PartSelection(None, alpha.id, instrument.id, "Alpha/a2.pdf")], playlist.id)
+    repo.save_selections(beta.id, instrument.id, [PartSelection(None, beta.id, instrument.id, "Beta/b.pdf")], playlist.id)
     result = Compiler(repo, source, tmp_path / "overrides", tmp_path / "compiled").compile(playlist, "Trombone")
     assert result.page_count == 6
     assert len(PdfReader(str(result.output_path)).pages) == 6
@@ -52,6 +52,8 @@ def test_song_instrument_override_combines_multiple_pdfs_in_selection_order(tmp_
     OverrideService(repo, tmp_path / "overrides").import_song_instrument_pdfs(
         song.id, instrument.id, [first, second]
     )
+    imported = repo.selections(song.id, instrument.id)[0]
+    repo.save_selections(song.id, instrument.id, [imported], playlist.id)
     result = Compiler(repo, source, tmp_path / "overrides", tmp_path / "compiled").compile(playlist, "Trombone")
 
     assert result.page_count == 3

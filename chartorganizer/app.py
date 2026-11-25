@@ -8,7 +8,7 @@ from dataclasses import replace
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .compiler import Compiler
-from .config import normalize_sources, project_paths, source_key
+from .config import migrate_library, normalize_sources, project_paths, save_user_settings, source_key, user_settings_path
 from .models import PartSelection, PdfCandidate, Playlist
 from .overrides import OverrideService
 from .playlist import PlaylistService
@@ -20,6 +20,7 @@ from .selections import SelectionService
 class ChartOrganizerApp:
     def __init__(self, root: tk.Tk, project_root: Path | None = None):
         self.root = root
+        self.first_run = not user_settings_path().exists()
         self.paths = project_paths(project_root)
         self.paths.ensure()
         self.repository = Repository(self.paths.database)
@@ -28,9 +29,12 @@ class ChartOrganizerApp:
         self.songs = scan_repertoire(self.paths.sources, self.repository, self.unavailable_sources)
         self.service = PlaylistService(self.songs)
         self.playlist = Playlist(None, "", self.repository.instrument("Trombone").id, [])
+        self.active_instrument_id = self.playlist.instrument_id
         self._build_ui()
         self._refresh_song_lists()
         self._show_scan_status()
+        if self.first_run:
+            self.root.after(100, self.setup_paths)
 
     def _build_ui(self):
         self.root.title("ChartOrganizer")
@@ -46,7 +50,9 @@ class ChartOrganizerApp:
         self.playlist_box.bind("<<ComboboxSelected>>", self._select_playlist)
         ttk.Label(toolbar, text="Instrument:").pack(side="left")
         self.instrument_var = tk.StringVar(value="Trombone")
-        ttk.Combobox(toolbar, textvariable=self.instrument_var, values=[i.name for i in self.repository.instruments()], state="readonly", width=20).pack(side="left", padx=4)
+        self.instrument_box = ttk.Combobox(toolbar, textvariable=self.instrument_var, values=[i.name for i in self.repository.instruments()], state="readonly", width=20)
+        self.instrument_box.pack(side="left", padx=4)
+        self.instrument_box.bind("<<ComboboxSelected>>", self._select_instrument)
 
         input_frame = ttk.Frame(self.root, padding=(8, 0))
         input_frame.pack(fill="x")
@@ -118,6 +124,7 @@ class ChartOrganizerApp:
         library_menu.add_command(label="Library Settings…", command=self.edit_library, underline=0)
         library_menu.add_separator()
         library_menu.add_command(label="Refresh", command=self.refresh, accelerator="F5", underline=0)
+        library_menu.add_command(label="Setup…", command=self.setup_paths)
         self._bind_shortcut("<F5>", self.refresh)
 
     def _bind_shortcut(self, sequence, command):
@@ -219,6 +226,7 @@ class ChartOrganizerApp:
                 messagebox.showwarning("Source Folders", str(exc), parent=dialog)
                 return
             self.paths = replace(self.paths, sources=sources)
+            save_user_settings(self.paths)
             self.refresh()
             dialog.destroy()
 
@@ -230,6 +238,62 @@ class ChartOrganizerApp:
         ttk.Button(actions, text="Save", command=save).pack(side="right")
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
         redraw()
+
+    def setup_paths(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("ChartOrganizer setup")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ttk.Label(dialog, text="Choose music folders, the library folder, and compiled PDF location.").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=12, pady=12)
+        values = [tk.StringVar(value="; ".join(map(str, self.paths.sources))),
+                  tk.StringVar(value=str(self.paths.library)), tk.StringVar(value=str(self.paths.compiled))]
+        labels = ["Music source folders (separate with semicolons)", "Library and imported parts", "Compiled PDF folder"]
+        for row, (label, variable) in enumerate(zip(labels, values), 1):
+            ttk.Label(dialog, text=label).grid(row=row, column=0, sticky="w", padx=12, pady=6)
+            ttk.Entry(dialog, textvariable=variable, width=48).grid(row=row, column=1, padx=6, pady=6)
+            ttk.Button(dialog, text="Browse…", command=lambda v=variable, l=label, multi=(row == 1): self._browse_path(v, l, dialog, multi)).grid(row=row, column=2, padx=12)
+        def save():
+            try:
+                sources = normalize_sources([p.strip() for p in values[0].get().split(";") if p.strip()])
+                data_dir, output_dir = Path(values[1].get()).expanduser(), Path(values[2].get()).expanduser()
+                old_library = self.paths.library
+                if data_dir.resolve() != old_library.resolve():
+                    if (data_dir / "library.sqlite3").exists():
+                        if (old_library / "library.sqlite3").exists() and not messagebox.askyesno(
+                                "Setup", "The selected folder already has a ChartOrganizer library. Use that library?", parent=dialog):
+                            return
+                    else:
+                        migrate_library(old_library, data_dir)
+                for folder in (data_dir, output_dir):
+                    folder.mkdir(parents=True, exist_ok=True)
+                    probe = folder / ".chartorganizer-write-check"
+                    probe.touch(); probe.unlink()
+                self.paths = replace(self.paths, sources=sources, data_dir=data_dir, output_dir=output_dir)
+                self.paths.ensure()
+                self.repository = Repository(self.paths.database)
+                self.repository.save_source_paths(sources)
+                save_user_settings(self.paths)
+                self.refresh()
+                self.first_run = False
+                dialog.destroy()
+            except Exception as exc:
+                messagebox.showerror("Setup", str(exc), parent=dialog)
+        actions = ttk.Frame(dialog)
+        actions.grid(row=4, column=0, columnspan=3, sticky="e", padx=12, pady=12)
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=4)
+        ttk.Button(actions, text="Save", command=save).pack(side="right")
+
+    @staticmethod
+    def _browse_path(variable, title, parent, multi=False):
+        current = [p.strip() for p in variable.get().split(";") if p.strip()]
+        selected = filedialog.askdirectory(parent=parent, title=title, initialdir=current[0] if current else None)
+        if selected:
+            if multi and selected not in current:
+                current.append(selected)
+                variable.set("; ".join(current))
+            elif not multi:
+                variable.set(selected)
 
     def edit_library(self):
         self._update_song_labels()
@@ -320,7 +384,14 @@ class ChartOrganizerApp:
         if not song or not instrument:
             return
         available = candidates(getattr(self.paths, "sources", self.paths.source), song)
-        saved = self.repository.selections(song.id, instrument.id)
+        if self.playlist.id is None and hasattr(self, "name_var"):
+            if not self.name_var.get().strip():
+                messagebox.showinfo("Parts", "Save this playlist before saving instrument parts.", parent=self.root)
+                return
+            if not self.save_playlist():
+                return
+        playlist_id = getattr(self.playlist, "id", None)
+        saved = self.repository.selections(song.id, instrument.id, playlist_id)
         by_path = {s.source_relative_path: s for s in saved}
         initial = [s.source_relative_path for s in saved]
         from .matcher import match_instrument
@@ -378,7 +449,7 @@ class ChartOrganizerApp:
                                                 old.page_ranges if old else None, override.override_path if override else None))
             if len(selections) == 1 and str(range_entry.cget("state")) == "normal":
                 selections[0].page_ranges = ranges_var.get().strip() or None
-            self.repository.save_selections(song.id, instrument.id, selections)
+            self.repository.save_selections(song.id, instrument.id, selections, playlist_id)
             if entry.optimize_for_kindle != kindle_var.get():
                 entry.optimize_for_kindle = kindle_var.get()
                 self.playlist.dirty = True
@@ -387,7 +458,7 @@ class ChartOrganizerApp:
         def show_imported(override_path):
             selected_paths = {available[index].relative_path for index in listbox.curselection()}
             selected_paths.add(f"Overrides/{override_path}")
-            for selection in self.repository.selections(song.id, instrument.id):
+            for selection in self.repository.selections(song.id, instrument.id, playlist_id):
                 if selection.override_path:
                     by_path[selection.source_relative_path] = selection
             for part in self.repository.override_parts(song.id, instrument.id):
@@ -549,10 +620,24 @@ class ChartOrganizerApp:
         instrument = next((i for i in self.repository.instruments() if i.id == loaded.instrument_id), None)
         if instrument:
             self.instrument_var.set(instrument.name)
+            self.active_instrument_id = instrument.id
+            self.playlist.entries = self.repository.load_entry_settings(loaded.id, instrument.id, loaded.entries)
         self._refresh_song_lists()
 
     def _select_playlist(self, _event=None):
         self._load_playlist(self.name_var.get())
+
+    def _select_instrument(self, _event=None):
+        instrument = self.repository.instrument(self.instrument_var.get())
+        if not instrument:
+            return
+        if self.playlist.id is not None:
+            self.repository.save_entry_settings(self.playlist.id, self.active_instrument_id, self.playlist.entries)
+            self.playlist.entries = self.repository.load_entry_settings(self.playlist.id, instrument.id, self.playlist.entries)
+        self.active_instrument_id = instrument.id
+        self.playlist.instrument_id = instrument.id
+        self._refresh_song_lists()
+        self.status_var.set(f"{self.name_var.get() or 'New playlist'} · {instrument.name}")
 
     def save_playlist(self):
         name = self.name_var.get().strip()
@@ -565,6 +650,7 @@ class ChartOrganizerApp:
         self.playlist.instrument_id = self.repository.instrument(self.instrument_var.get()).id
         try:
             self.playlist = self.repository.save_playlist(self.playlist)
+            self.repository.save_entry_settings(self.playlist.id, self.playlist.instrument_id, self.playlist.entries)
             self.name_var.set(self.playlist.name)
             self._refresh_playlist_names()
             self.status_var.set(f"Saved {name}")
@@ -575,10 +661,17 @@ class ChartOrganizerApp:
 
     def save_as(self):
         name = simpledialog.askstring("Save As", "New playlist name:", initialvalue=self.name_var.get(), parent=self.root)
-        if name:
-            self.playlist.id, self.playlist.name = None, name.strip()
-            self.name_var.set(self.playlist.name)
-            self.save_playlist()
+        if name and name.strip():
+            try:
+                if not self.save_playlist():
+                    return
+                copied = self.repository.duplicate_playlist(self.playlist.name, name.strip())
+                self.playlist = copied
+                self.name_var.set(copied.name)
+                self._refresh_playlist_names()
+                self._refresh_song_lists()
+            except (ValueError, KeyError) as exc:
+                messagebox.showerror("Save As", str(exc), parent=self.root)
 
     def open_playlist(self):
         names = self.repository.playlists()
@@ -611,10 +704,12 @@ class ChartOrganizerApp:
         instrument_obj = self.repository.instrument(instrument)
         selection_service = SelectionService(self.repository, self.paths.source)
         for entry in self.playlist.entries:
-            if not self.repository.selections(entry.song_id, instrument_obj.id):
+            if not self.repository.selections(entry.song_id, instrument_obj.id, self.playlist.id):
                 song = self.repository.song(entry.song_id)
                 if song:
-                    selection_service.auto_select(entry.song_id, instrument_obj.id, candidates(getattr(self.paths, "sources", self.paths.source), song), instrument_obj)
+                    selection_service.auto_select(entry.song_id, instrument_obj.id,
+                                                  candidates(getattr(self.paths, "sources", self.paths.source), song),
+                                                  instrument_obj, self.playlist.id)
         self.status_var.set("Compiling…")
         def work():
             try:

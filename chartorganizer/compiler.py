@@ -51,7 +51,7 @@ class Compiler:
             if not song or not instrument:
                 errors.append(f"Entry {position + 1}: song or instrument is missing")
                 continue
-            selections = self.repository.selections(song.id, instrument.id)
+            selections = self.repository.selections(song.id, instrument.id, playlist.id if playlist.id is not None else None)
             if not selections:
                 errors.append(f"{song.display_name}: no selected parts")
                 continue

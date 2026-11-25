@@ -17,6 +17,50 @@ def test_songs_and_playlist_round_trip(tmp_path: Path):
     assert repo.song(song_a.id).aliases == ["A short"]
 
 
+def test_playlist_parts_and_layout_settings_are_scoped_by_instrument_and_playlist(tmp_path: Path):
+    repo = Repository(tmp_path / "library.sqlite3")
+    song = repo.upsert_song(Song(None, "A", "Alpha", [], "A"))
+    second_song = repo.upsert_song(Song(None, "B", "Beta", [], "B"))
+    trombone = repo.instrument("Trombone")
+    trumpet = repo.instrument("Trumpet")
+    setlist = repo.save_playlist(Playlist(None, "Holiday", trombone.id, [PlaylistEntry(song.id), PlaylistEntry(second_song.id)]))
+    practice = repo.save_playlist(Playlist(None, "Practice", trombone.id, [PlaylistEntry(song.id)]))
+
+    repo.save_selections(song.id, trombone.id, [PartSelection(None, song.id, trombone.id, "A/trombone.pdf")], setlist.id)
+    repo.save_selections(song.id, trumpet.id, [PartSelection(None, song.id, trumpet.id, "A/trumpet.pdf")], setlist.id)
+    repo.save_entry_settings(setlist.id, trombone.id, [PlaylistEntry(song.id, optimize_for_kindle=True), PlaylistEntry(second_song.id, optimize_for_kindle=False)])
+    repo.save_entry_settings(setlist.id, trumpet.id, [PlaylistEntry(song.id, optimize_for_kindle=False), PlaylistEntry(second_song.id, optimize_for_kindle=True)])
+
+    assert [p.source_relative_path for p in repo.selections(song.id, trombone.id, setlist.id)] == ["A/trombone.pdf"]
+    assert [p.source_relative_path for p in repo.selections(song.id, trumpet.id, setlist.id)] == ["A/trumpet.pdf"]
+    assert repo.selections(song.id, trombone.id, practice.id) == []
+    assert repo.load_entry_settings(setlist.id, trombone.id, setlist.entries)[0].optimize_for_kindle is True
+    assert repo.load_entry_settings(setlist.id, trumpet.id, setlist.entries)[0].optimize_for_kindle is False
+
+    setlist.entries.reverse()
+    repo.save_playlist(setlist)
+    reversed_trumpet_settings = repo.load_entry_settings(setlist.id, trumpet.id, setlist.entries)
+    assert [entry.optimize_for_kindle for entry in reversed_trumpet_settings] == [True, False]
+
+    copied = repo.duplicate_playlist("Holiday", "Holiday copy")
+    assert [p.source_relative_path for p in repo.selections(song.id, trumpet.id, copied.id)] == ["A/trumpet.pdf"]
+    assert [entry.optimize_for_kindle for entry in repo.load_entry_settings(copied.id, trumpet.id, copied.entries)] == [True, False]
+
+
+def test_legacy_parts_migrate_once_to_existing_playlists_only(tmp_path: Path):
+    database = tmp_path / "library.sqlite3"
+    repo = Repository(database)
+    song = repo.upsert_song(Song(None, "A", "Alpha", [], "A"))
+    instrument = repo.instrument("Trombone")
+    existing = repo.save_playlist(Playlist(None, "Existing", instrument.id, [PlaylistEntry(song.id)]))
+    repo.save_selections(song.id, instrument.id, [PartSelection(None, song.id, instrument.id, "A/part.pdf")])
+
+    migrated = Repository(database)
+    assert [part.source_relative_path for part in migrated.selections(song.id, instrument.id, existing.id)] == ["A/part.pdf"]
+    later = migrated.save_playlist(Playlist(None, "Later", instrument.id, [PlaylistEntry(song.id)]))
+    assert migrated.selections(song.id, instrument.id, later.id) == []
+
+
 def test_duplicate_playlist_requires_unique_name(tmp_path: Path):
     repo = Repository(tmp_path / "library.sqlite3")
     song = repo.upsert_song(Song(None, "A", "Alpha", [], "A"))

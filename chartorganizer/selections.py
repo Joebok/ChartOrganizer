@@ -28,13 +28,14 @@ class SelectionService:
     def __init__(self, repository: Repository, source: Path):
         self.repository, self.source = repository, Path(source)
 
-    def auto_select(self, song_id: int, instrument_id: int, candidates: list[PdfCandidate], instrument) -> list[PartSelection]:
+    def auto_select(self, song_id: int, instrument_id: int, candidates: list[PdfCandidate], instrument,
+                    playlist_id: int | None = None) -> list[PartSelection]:
         from .matcher import match_instrument
         result = match_instrument(candidates, instrument)
         if result.ambiguous:
             return []
         selections = [PartSelection(None, song_id, instrument_id, c.relative_path, i) for i, c in enumerate(result.selected)]
-        self.repository.save_selections(song_id, instrument_id, selections)
+        self.repository.save_selections(song_id, instrument_id, selections, playlist_id)
         return selections
 
     def save(self, selections: list[PartSelection]) -> None:
